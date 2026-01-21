@@ -4,9 +4,6 @@ __pycache__/
 # IDE-related
 .idea/
 
-# Virtual environment directory
-venv/
-
 # Django local settings
 schema_api/local_settings.py
 
@@ -15,3 +12,13 @@ schema-api/.env
 
 # Managers configuration file
 schema-api/managers.yml
+
+
+# Local deployment Configuration
+deployment/Installation/
+
+# Virtual environment directory
+venv/
+
+# DockerFile
+Dockerfile

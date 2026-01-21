@@ -24,6 +24,8 @@ semantic-version = "*"
 dpath = "*"
 redis = "*"
 
+kubernetes = "*"
+
 [dev-packages]
 ddt = "*"
 
