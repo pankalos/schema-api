@@ -31,7 +31,10 @@ INSTALLED_APPS = [
     'workflows',
     'experiments',
     'graphene_django',
-    'drf_spectacular'
+    'drf_spectacular',
+    'api_streaming',
+    'api_streaming_influx',
+    'api_streaming_timescale'
 ]
 
 MIDDLEWARE = [
@@ -143,7 +146,10 @@ MIGRATION_MODULES = {
     'files': 'migrations.files',
     'monitor': 'migrations.monitor',
     'quotas': 'migrations.quotas',
-    'workflows': 'migrations.workflows'
+    'workflows': 'migrations.workflows',
+    'api_streaming': 'migrations.api_streaming',
+    'api_streaming_influx': 'migrations.api_streaming_influx',
+    'api_streaming_timescale': 'migrations.api_streaming_timescale'
 }
 
 POSTGRES_DATABASE_CONFIGURATION = {

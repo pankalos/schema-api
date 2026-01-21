@@ -22,3 +22,6 @@ venv/
 
 # DockerFile
 Dockerfile
+
+# Ignore SQLite3 files
+*.sqlite3
