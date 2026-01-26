@@ -1,13 +1,31 @@
+import os
 from rest_framework import status
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 from django.utils.crypto import get_random_string
 from django.utils import timezone
 
-from .models import TimescaleStreamDB
+from .models import TimescaleDB
 from .serializers import TimescaleCreateSerializer, TimescaleStreamSummarySerializer, TimescaleStreamSerializer
 
 from kubernetes import client, config
 from kubernetes.config.config_exception import ConfigException
+
+
+
+def require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+def get_listener_image() -> str:
+    return require_env("SCHEMA_API_TIMESCALE_LISTENER_IMAGE")
+
+def get_streaming_namespace() -> str:
+    return require_env("SCHEMA_API_STREAMING_NAMESPACE")
+
 
 
 # Ensure in-cluster config is loaded once. Lazy Kubernetes client init
@@ -29,7 +47,59 @@ def get_k8s_api():
 
 
 
-LISTENER_IMAGE = "pankalos/timescaledb-listener:latest-b"
+
+def _db_profile_to_secret_name(db_profile: str) -> str:
+    """
+    Convert a user-provided db_profile (e.g. "timescaleDB") into a Kubernetes Secret profile name
+    using an allowlist mapping stored in an env var.
+
+    You set this on the schema-api Deployment, for example:
+      SCHEMA_API_STREAMING_DB_PROFILES='{"timescaleDB":"db-profile-timescaleDB"}'
+
+    Why this indirection?
+      - We do NOT accept secret names directly from the user (security).
+      - User can only choose among the profiles you explicitly allow.
+    """
+
+    # 1) Read the raw mapping text from the environment.
+    #    If it's missing, default to "{}" (an empty JSON object).
+    raw = os.environ.get("SCHEMA_API_STREAMING_DB_PROFILES", "{}")
+
+    try:
+        # 2) Parse the JSON text into a Python object.
+        #    Example:
+        #      raw = '{"timescaleDB":"db-profile-timescaleDB"}'
+        #      mapping becomes: {"timescaleDB": "db-profile-timescaleDB"}
+        mapping = json.loads(raw)
+    except Exception:
+        # 3) If parsing fails (invalid JSON), treat it as empty mapping.
+        mapping = {}
+
+    # 4) json.loads() can return many types depending on JSON:
+    #    - dict for {"a": 1}
+    #    - list for [1,2,3]
+    #    - str for "hello"
+    #    - int/float/bool/null, etc.
+    #    We only accept a dict (profile -> secretName).
+    if not isinstance(mapping, dict):
+        mapping = {}
+
+    # 5) Look up the Secret name for this profile.
+    #    If profile isn't present, secret_profile becomes None.
+    secret_profile = mapping.get(db_profile)
+
+    # 6) If it's missing, raise a validation error (400) with a clear message.
+    if not secret_profile:
+        raise ValidationError({
+            "db_profile": (
+                f"Unknown db_profile '{db_profile}'. "
+                "It must exist in SCHEMA_API_STREAMING_DB_PROFILES."
+            )
+        })
+
+    # 7) Return the Kubernetes Secret name (string).
+    return secret_profile
+
 
 
 # ---------- CREATE ----------
@@ -39,11 +109,33 @@ def handle_timescale_create(data, user):
     serializer.is_valid(raise_exception=True)
     validated_data = serializer.validated_data
 
+    # LISTENER_IMAGE = "pankalos/timescaledb-listener:latest-b"
+    LISTENER_IMAGE = get_listener_image()
+    STREAMING_NAMESPACE = get_streaming_namespace()
+
+
     rand_s = get_random_string(10).lower()
-    namespace = "schema-api"                    # Hardcoded Predefined namespace!
+    # namespace = "schema-api"                    # Hardcoded Predefined namespace!
+    namespace = STREAMING_NAMESPACE
     psql_in   = validated_data["psql_in"]
     psql_out  = validated_data["psql_out"]
     modeler   = validated_data["modeler"]
+    db_profile = validated_data["db_profile"]
+
+
+    # Resolve the Kubernetes Secret *name* from the profile (allowlist mapping)
+    # Example: db_profile="timescaleDB" -> secret_profile_name="db-profile-timescaleDB"
+    secret_profile_name = _db_profile_to_secret_name(db_profile)
+
+    # Tell Kubernetes: "load ALL key/value pairs from this Secret as environment variables
+    # inside the *listener container*".
+    # If the Secret contains keys like PSQL_HOST, PSQL_PORT, ... then inside the container:
+    #   PSQL_HOST=<value>, PSQL_PORT=<value>, ...
+    env_from = [
+        client.V1EnvFromSource(
+            secret_ref=client.V1SecretEnvSource(name=secret_profile_name)
+        )
+    ]
 
     pod_modeler_name = f"modeler-{rand_s}"
     svc_modeler_name = f"modeler-svc-{rand_s}"
@@ -73,7 +165,11 @@ def handle_timescale_create(data, user):
     )
     get_k8s_api().create_namespaced_service(namespace=namespace, body=service)
 
-    # 3) listener pod args. Modification need...
+
+    # We pass DB connection parameters to the listener via args, BUT using $(...) placeholders.
+    # Kubernetes expands $(PSQL_HOST) etc. at container start time using the env vars above.
+    # So the listener ultimately receives real values like:
+    #   --psql_host timescaledb.schema-api.svc.cluster.local
     args = [
         "python", "-u", "timescaledb-listener.py",
         "--modeler_service", svc_modeler_name,
@@ -81,12 +177,12 @@ def handle_timescale_create(data, user):
         # "--modeler_namespace", namespace,         # Currently Both Modeler & Listener are in the same Namespace predifined above!
         "--modeler_port", str(modeler["port"]),
 
-        "--psql_host", psql_in["host"],
-        "--psql_port", str(psql_in["port"]),
-        "--psql_dbname", psql_in["dbname"],
+        "--psql_host", "$(PSQL_HOST)",
+        "--psql_port", "$(PSQL_PORT)",
+        "--psql_dbname", "$(PSQL_DBNAME)",
         "--psql_dbtable_in", psql_in["table_in"],
-        "--psql_user", psql_in["user"],
-        "--psql_password", psql_in["password"],
+        "--psql_user", "$(PSQL_USER)",
+        "--psql_password", "$(PSQL_PASSWORD)",
 
         "--everyTs", str(psql_in["everyTs"]),
         "--cols_in", *psql_in["cols_in"],
@@ -118,16 +214,7 @@ def handle_timescale_create(data, user):
         args.append("--migrate_existing")
 
 
-    # 4) listener pod (inject PG password via Secret -> env -> script reads PGPASSWORD)
-    # env = [client.V1EnvVar(
-    #     name="PGPASSWORD",
-    #     value_from=client.V1EnvVarSource(
-    #         secret_key_ref=client.V1SecretKeySelector(name=psql_in["password_secret"], key="password")
-    #     )
-    # )]
-
-    # print(f'args: ${args}')
-
+    # Listener pod: env_from must be included so $(PSQL_*) placeholders can expand
     pod_listener = client.V1Pod(
         metadata=client.V1ObjectMeta(name=pod_listener_name, namespace=namespace, labels={"role":"timescale-listener", "stream_id": rand_s}),
         spec=client.V1PodSpec(containers=[
@@ -135,20 +222,25 @@ def handle_timescale_create(data, user):
                 name=pod_listener_name,
                 image=LISTENER_IMAGE,
                 args=args,
-                # env=env
+                env_from=env_from
             )
         ])
     )
 
     get_k8s_api().create_namespaced_pod(namespace=namespace, body=pod_listener)
 
-    # --- Save to DB ---
-    job = TimescaleStreamDB.objects.create(
-        id=rand_s, user=user, namespace=namespace,
+    # --- Save to DB (store ONLY the profile name + non-secret configs) ---
+    job = TimescaleDB.objects.create(
+        id=rand_s, 
+        user=user, 
+        namespace=namespace,
         pod_modeler_name=pod_modeler_name,
         svc_modeler_name=svc_modeler_name,
         pod_listener_name=pod_listener_name,
-        psql_in=psql_in, psql_out=psql_out, modeler=modeler,
+        db_profile=db_profile,
+        psql_in=psql_in, 
+        psql_out=psql_out, 
+        modeler=modeler,
         status="Running"
     )
 
@@ -158,7 +250,7 @@ def handle_timescale_create(data, user):
 # ---------- LIST ----------
 
 def handle_timescale_list(user):
-    ts_journeys = TimescaleStreamDB.objects.filter(user=user)
+    ts_journeys = TimescaleDB.objects.filter(user=user)
     serializer = TimescaleStreamSummarySerializer(ts_journeys, many=True)
     return Response(serializer.data, status=200)
 
@@ -167,10 +259,10 @@ def handle_timescale_list(user):
 
 def handle_timescale_detail(task_id, user):
     try:
-        ts_journey = TimescaleStreamDB.objects.get(id=task_id, user=user)
+        ts_journey = TimescaleDB.objects.get(id=task_id, user=user)
         serializer = TimescaleStreamSerializer(ts_journey)
         return Response(serializer.data, status=200)
-    except TimescaleStreamDB.DoesNotExist:
+    except TimescaleDB.DoesNotExist:
         return Response({"error": "Not found"}, status=404)
 
 
@@ -178,7 +270,7 @@ def handle_timescale_detail(task_id, user):
 
 def handle_timescale_terminate(task_id, user):
     try:
-        job = TimescaleStreamDB.objects.get(pk=task_id, user=user)
+        job = TimescaleDB.objects.get(pk=task_id, user=user)
         # delete pods and service (ignore 404s)
         try: get_k8s_api().delete_namespaced_pod(name=job.pod_listener_name, namespace=job.namespace)
         except Exception: pass
@@ -192,6 +284,6 @@ def handle_timescale_terminate(task_id, user):
         job.status = "Terminated"
         job.save()
         return Response({"status": "Terminated"}, status=200)
-    except TimescaleStreamDB.DoesNotExist:
+    except TimescaleDB.DoesNotExist:
         return Response({"error":"Not found"}, status=404)
 

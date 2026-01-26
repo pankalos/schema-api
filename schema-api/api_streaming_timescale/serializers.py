@@ -1,15 +1,16 @@
 from rest_framework import serializers
-from .models import TimescaleStreamDB
+from .models import TimescaleDB
 
 
 class PsqlInSerializer(serializers.Serializer):
-    host = serializers.CharField()
-    port = serializers.IntegerField()
-    dbname = serializers.CharField()
+    # host = serializers.CharField()
+    # port = serializers.IntegerField()
+    # dbname = serializers.CharField()
+    # password = serializers.CharField()    # name of K8s Secret that has 'password'
+    # user = serializers.CharField()
+    
+    # No host/user/password here anymore
     table_in = serializers.CharField()
-    user = serializers.CharField()
-    password = serializers.CharField()    # name of K8s Secret that has 'password'
-
     everyTs = serializers.IntegerField(min_value=1)
     cols_in = serializers.ListField(child=serializers.CharField())
     time_col_in = serializers.CharField()
@@ -33,6 +34,10 @@ class ModelerSerializer(serializers.Serializer):
 
 class TimescaleCreateSerializer(serializers.Serializer):
     # namespace = serializers.CharField()
+
+    # REQUIRED: user selects a DB profile, not credentials
+    db_profile = serializers.CharField()
+
     psql_in   = PsqlInSerializer()
     psql_out  = PsqlOutSerializer()
     modeler   = ModelerSerializer()
@@ -42,7 +47,7 @@ class TimescaleStreamSerializer(serializers.ModelSerializer):
     total_runtime = serializers.SerializerMethodField()
 
     class Meta:
-        model = TimescaleStreamDB
+        model = TimescaleDB
         fields = '__all__'
 
     def get_total_runtime(self, obj):
@@ -57,8 +62,8 @@ class TimescaleStreamSummarySerializer(serializers.ModelSerializer):
     total_runtime = serializers.SerializerMethodField()
 
     class Meta:
-        model = TimescaleStreamDB
-        fields = ['id', 'created_at', 'status', 'total_runtime']
+        model = TimescaleDB
+        fields = ['id', 'created_at', 'db_profile', 'status', 'total_runtime']
 
     def get_total_runtime(self, obj):
         delta = obj.computed_runtime
