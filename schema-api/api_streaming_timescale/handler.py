@@ -1,4 +1,4 @@
-import os
+import os, json
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
@@ -47,58 +47,39 @@ def get_k8s_api():
 
 
 
-
 def _db_profile_to_secret_name(db_profile: str) -> str:
-    """
-    Convert a user-provided db_profile (e.g. "timescaleDB") into a Kubernetes Secret profile name
-    using an allowlist mapping stored in an env var.
+    # Read from env (ConfigMap often adds a trailing newline)
+    raw = os.environ.get("SCHEMA_API_STREAMING_DB_PROFILES", "{}").strip()
 
-    You set this on the schema-api Deployment, for example:
-      SCHEMA_API_STREAMING_DB_PROFILES='{"timescaleDB":"db-profile-timescaleDB"}'
-
-    Why this indirection?
-      - We do NOT accept secret names directly from the user (security).
-      - User can only choose among the profiles you explicitly allow.
-    """
-
-    # 1) Read the raw mapping text from the environment.
-    #    If it's missing, default to "{}" (an empty JSON object).
-    raw = os.environ.get("SCHEMA_API_STREAMING_DB_PROFILES", "{}")
-
+    # Parse JSON safely
     try:
-        # 2) Parse the JSON text into a Python object.
-        #    Example:
-        #      raw = '{"timescaleDB":"db-profile-timescaleDB"}'
-        #      mapping becomes: {"timescaleDB": "db-profile-timescaleDB"}
         mapping = json.loads(raw)
-    except Exception:
-        # 3) If parsing fails (invalid JSON), treat it as empty mapping.
-        mapping = {}
+    except Exception as e:
+        raise ValidationError({
+            "db_profile": f"SCHEMA_API_STREAMING_DB_PROFILES is not valid JSON: {e}"
+        })
 
-    # 4) json.loads() can return many types depending on JSON:
-    #    - dict for {"a": 1}
-    #    - list for [1,2,3]
-    #    - str for "hello"
-    #    - int/float/bool/null, etc.
-    #    We only accept a dict (profile -> secretName).
+    # Ensure it's a dict (profile -> secret name)
     if not isinstance(mapping, dict):
-        mapping = {}
+        raise ValidationError({
+            "db_profile": "SCHEMA_API_STREAMING_DB_PROFILES must be a JSON object like "
+                          '{"timescaleDB":"db-profile-timescale-db"}'
+        })
 
-    # 5) Look up the Secret name for this profile.
-    #    If profile isn't present, secret_profile becomes None.
-    secret_profile = mapping.get(db_profile)
+    # Normalize incoming key
+    key = (db_profile or "").strip()
 
-    # 6) If it's missing, raise a validation error (400) with a clear message.
-    if not secret_profile:
+    secret_profile_name = mapping.get(key)
+    if not secret_profile_name:
         raise ValidationError({
             "db_profile": (
-                f"Unknown db_profile '{db_profile}'. "
-                "It must exist in SCHEMA_API_STREAMING_DB_PROFILES."
+                f"Unknown db_profile {db_profile!r} (normalized={key!r}). "
+                f"Available profiles: {sorted(mapping.keys())}"
             )
         })
 
-    # 7) Return the Kubernetes Secret name (string).
-    return secret_profile
+    return secret_profile_name
+
 
 
 
