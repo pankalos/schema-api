@@ -16,44 +16,539 @@ To deploy the platform, you need the following components:
 
 ---
 
-## Prerequisites
+## Quick Deployment Guides
 
-Before deploying Schema-API and Schema-Lab, make sure the following are available:
+The following quick guides describe one working deployment flow for the required dependencies of **Schema-API** and **Schema-Lab**:
 
-### 1. Kubernetes
-A working Kubernetes cluster is required.
+1. NFS storage provisioner
+2. MinIO
+3. PostgreSQL
+4. TESK
 
-### 2. Storage Class
-To handle tasks with I/O [TESK](https://github.com/elixir-cloud-aai/TESK/blob/master/documentation/deployment.md) creates temporary PVCs.
-You need a storage class that supports creation of temporary PVCs.
+> **Note:** These steps reflect the deployment approach used in this project and the attached template instructions.
 
-- Support for **ReadWriteOnce (RWO)** is sufficient.
-- This demo was tested with [**NFS**](https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner.git).
+---
 
-### 3. Storage Backend for External I/O
-[TESK](https://github.com/elixir-cloud-aai/TESK/blob/master/documentation/deployment.md) requires a backend for exchanging files with the external world.
+## 1. Quick Deployment Guide: NFS
 
-Currently supported backends include:
+This NFS provisioner is used to provide a storage class that supports dynamic PVC/PV creation. In this setup, the storage class name is `storageclass-nfs`.
 
-- **FTP**: read/write access to a single FTP account
-- **Shared filesystem**: usually provided through a **ReadWriteMany (RWX)** PVC
-- **S3-compatible storage** *(work in progress)*: read/write access to a single bucket
+### 1. Clone the repository
 
-In this deployment, [**MinIO**](https://docs.min.io/enterprise/aistor-object-store/installation/kubernetes/) was used as the S3-compatible backend.
+```bash
+git clone https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner.git
+cd nfs-ganesha-server-and-external-provisioner
+```
 
-### 4. TESK
-[TESK](https://github.com/elixir-cloud-aai/TESK/tree/master) is an implementation of a task execution engine based on the TES standard and running on Kubernetes.
+### 2. Configure the export volume
 
-TESK can be deployed once the storage class and storage backend are available.
+Edit `deploy/kubernetes/deployment.yaml` and mount a local directory or another supported volume at `/export`.
 
-Useful links:
-- [TESK repository](https://github.com/elixir-cloud-aai/TESK?tab=readme-ov-file)
-- [TESK deployment documentation](https://github.com/elixir-cloud-aai/TESK/blob/master/documentation/deployment.md)
+Example:
 
-### 5. PostgreSQL
-Schema-API requires **PostgreSQL** as its backend database.
-You can choose any PostgreSQL installation at your desposal.
-[**Crunchy PostgreSQL**](https://access.crunchydata.com/documentation/postgres-operator/latest/tutorials/basic-setup/create-cluster) used for this demo deployment.
+```yaml
+volumeMounts:
+  - name: export-volume
+    mountPath: /export
+
+volumes:
+  - name: export-volume
+    hostPath:
+      path: /path/to/your/nfs-state-data
+```
+
+> The backing volume must use a supported local Linux filesystem. NFS itself is not supported as the backend for this export path.
+
+### 3. Set the provisioner name
+
+In `deploy/kubernetes/deployment.yaml`, set the provisioner argument:
+
+```yaml
+args:
+  - "-provisioner=k8s-provisioner/nfs"
+```
+
+### 4. Deploy the provisioner
+
+```bash
+kubectl create -f deploy/kubernetes/deployment.yaml
+```
+
+### 5. Apply RBAC resources
+
+```bash
+kubectl create -f deploy/kubernetes/rbac.yaml
+```
+
+### 6. Create the StorageClass
+
+Edit `deploy/kubernetes/class.yaml` so that it uses the same provisioner name:
+
+```yaml
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: storageclass-nfs
+provisioner: k8s-provisioner/nfs
+mountOptions:
+  - vers=3
+```
+
+Apply it:
+
+```bash
+kubectl create -f deploy/kubernetes/class.yaml
+```
+
+### 7. Test with a PVC
+
+Create a PVC using `storageclass-nfs`:
+
+```yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: nfs
+spec:
+  storageClassName: storageclass-nfs
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Mi
+```
+
+Apply it:
+
+```bash
+kubectl apply -f deploy/kubernetes/claim.yaml
+```
+
+Check that the PVC and PV are created:
+
+```bash
+kubectl get pv,pvc -A
+```
+
+> Deleting the PVC will also delete the dynamically provisioned PV and its data. If the provisioner deployment is removed, existing PVs become unusable until it is restored.
+
+---
+
+## 2. Quick Deployment Guide: MinIO
+
+MinIO is used here as the S3-compatible storage backend. The deployment uses the **MinIO Operator** and a **Tenant**, both installed from local Helm charts. 
+
+### 1. Install the MinIO Operator
+
+Download and extract the Operator chart:
+
+```bash
+curl -O https://raw.githubusercontent.com/minio/operator/master/helm-releases/operator-7.1.1.tgz
+tar -xvzf operator-7.1.1.tgz
+```
+
+Optional: edit `operator/values.yaml` and reduce replicas if needed:
+
+```yaml
+replicaCount: 1
+```
+
+Install the operator:
+
+```bash
+helm install --namespace minio --create-namespace minio-operator ./operator
+```
+
+### 2. Install the MinIO Tenant
+
+Download and extract the Tenant chart:
+
+```bash
+curl -O https://raw.githubusercontent.com/minio/operator/master/helm-releases/tenant-7.1.1.tgz
+tar -xvzf tenant-7.1.1.tgz
+```
+
+Edit `tenant/values.yaml` and set values like these:
+
+```yaml
+configSecret:
+  name: myminio-env-configuration
+  accessKey: minio
+  secretKey: minio-password
+
+pools:
+  volumesPerServer: 1
+  size: 500Mi
+  storageClassName: storageclass-nfs
+
+certificate:
+  requestAutoCert: false
+
+exposeServices:
+  minio: true
+  console: true
+```
+
+Install the tenant:
+
+```bash
+helm install --namespace minio minio-tenant ./tenant
+helm upgrade --install minio-tenant ./tenant -f ./tenant/values.yaml -n minio
+```
+
+### 3. Access the MinIO console
+
+Check the service:
+
+```bash
+kubectl get svc -n minio
+```
+
+If `requestAutoCert: false`, access the console over HTTP using the NodePort shown for the console service. If `requestAutoCert: true`, use HTTPS instead. The uploaded instructions use credentials like:
+
+```text
+username: minio
+password: minio-password
+```
+
+> Keep real credentials out of the README and replace them with placeholders in your public docs. 
+
+### 4. Verify MinIO with `mc`
+
+Run a temporary MinIO client pod:
+
+```bash
+kubectl -n minio run mcsh --rm -it --restart=Never --image=minio/mc --command -- /bin/sh
+```
+
+Inside the pod:
+
+```bash
+mc alias set myminio http://myminio-tenant-hl:9000 'minio' 'minio-password'
+mc admin info myminio
+mc mb -p myminio/testbucket
+echo hello | mc pipe myminio/testbucket/hello.txt
+mc ls myminio/testbucket
+exit
+```
+
+### 5. Create dedicated access keys for applications
+
+A common pattern is to create a separate MinIO user and attach the `readwrite` policy:
+
+```bash
+mc admin user add myminio <ACCESS_KEY> '<SECRET_KEY>'
+mc admin policy attach myminio readwrite --user <ACCESS_KEY>
+```
+
+Then test with the new credentials:
+
+```bash
+mc alias set myminio2 http://myminio-tenant-hl:9000 '<ACCESS_KEY>' '<SECRET_KEY>'
+mc ls myminio2
+```
+
+### 6. Base64-encode credentials for Kubernetes secrets
+
+You may need base64-encoded values for K8s manifests:
+
+```bash
+echo -n '<ACCESS_KEY>' | base64
+echo -n '<SECRET_KEY>' | base64
+```
+
+These values can then be used in your Schema-API secrets. 
+
+---
+
+## 3. Quick Deployment Guide: PostgreSQL
+
+Schema-API requires PostgreSQL. In this setup, PostgreSQL is deployed with **Crunchy Postgres for Kubernetes** using a Helm-based examples repository. The guide assumes that `storageclass-nfs` is the cluster default, or that you explicitly set it in the values file. 
+
+### 1. Clone the examples repository
+
+```bash
+git clone https://github.com/pankalos/postgres-operator-examples
+cd postgres-operator-examples
+```
+
+### 2. Configure PostgreSQL values
+
+Edit `helm/postgres/values.yaml`.
+
+Example configuration:
+
+```yaml
+instanceSize: 500Mi
+instanceStorageClassName: "storageclass-nfs"
+
+users:
+  - name: <POSTGRES_USER>
+    databases:
+      - schema
+    options: 'SUPERUSER'
+
+backupsSize: 500Mi
+backupsStorageClassName: "storageclass-nfs"
+```
+
+### 3. Install the Crunchy Postgres Operator
+
+```bash
+helm install cpk helm/install --namespace postgres-operator --create-namespace
+```
+
+### 4. Install the PostgreSQL cluster
+
+```bash
+helm install schema helm/postgres --namespace postgres-operator
+```
+
+### 5. Read the generated credentials
+
+Example:
+
+```bash
+kubectl get secret schema-pguser-<POSTGRES_USER> -n postgres-operator -o jsonpath='{.data.user}' | base64 --decode
+```
+
+The generated secret includes values such as:
+
+- database name
+- host
+- user
+- password
+- port
+- URI / JDBC URI
+
+These values are used later in `schema-api-local-template.yaml`.
+
+### 6. Upgrade or uninstall
+
+Upgrade after changing values:
+
+```bash
+helm upgrade schema helm/postgres -n postgres-operator
+```
+
+Uninstall the cluster:
+
+```bash
+helm uninstall schema -n postgres-operator
+```
+
+Uninstall the operator:
+
+```bash
+helm uninstall cpk -n postgres-operator
+```
+
+### 7. Connect to PostgreSQL
+
+```bash
+kubectl exec schema-instance1-c9gt-0 -n postgres-operator -it -- psql
+```
+
+Useful commands inside `psql`:
+
+```sql
+\l
+\dt
+\c schema
+\dnS
+```
+
+To recreate the public schema from scratch:
+
+```sql
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+```
+
+---
+
+## 4. Quick Deployment Guide: TESK
+
+[TESK](https://github.com/elixir-cloud-aai/TESK/tree/master) is the task execution backend used by Schema-API. In this setup it is configured to use **S3 storage**, **MinIO credentials**, and the `storageclass-nfs` storage class. 
+
+### 1. Clone TESK
+
+```bash
+git clone https://github.com/elixir-cloud-aai/TESK.git
+cd TESK
+```
+
+### 2. Configure `charts/tesk/values.yaml`
+
+Edit `charts/tesk/values.yaml` and update the deployment settings.
+
+Example values from the uploaded guide:
+
+```yaml
+host_name: ""
+storage: s3
+storageClass: storageclass-nfs
+
+tesk:
+  tes_api_base_path: v1
+  image: docker.io/elixircloud/tesk-api:1.1.0
+  port: 8080
+  taskmaster_image_name: docker.io/elixircloud/tesk-core-taskmaster
+  taskmaster_image_version: v0.10.4
+  taskmaster_filer_image_name: pankalos/tesk-core-filer-v0.10.4
+  taskmaster_filer_image_version: patched
+
+service:
+  type: NodePort
+  node_port: 31567
+```
+
+### 3. Configure S3 access for TESK
+
+Go to:
+
+```text
+TESK/charts/tesk/s3-config/
+```
+
+Create the `config` file from the template:
+
+```ini
+[default]
+endpoint_url=http://myminio-tenant-hl.minio.svc.cluster.local:9000
+```
+
+Create the `credentials` file from the template:
+
+```ini
+[default]
+aws_access_key_id=<MINIO_ACCESS_KEY>
+aws_secret_access_key=<MINIO_SECRET_KEY>
+```
+
+### 4. Create a test object in MinIO
+
+Example test file contents:
+
+```text
+Hello from Kubernetes storage
+This is another line.
+this too
+Hello again here!
+Hi!
+```
+
+Upload it to a bucket, for example `s3://test/testfile.txt`, before testing TESK. 
+
+### 5. Create the namespace and install TESK
+
+```bash
+kubectl create namespace tesk
+cd charts/tesk
+helm upgrade --install tesk-release . -f values.yaml -n tesk
+```
+
+### 6. Verify TESK
+
+Check that the API is reachable:
+
+```bash
+curl --location 'http://<NODE_IP>:31567/v1/tasks'
+```
+
+Expected response:
+
+```json
+{
+  "tasks": []
+}
+```
+
+### 7. Submit a test task using S3 input/output
+
+Example request:
+
+```bash
+curl --location 'http://<NODE_IP>:31567/v1/tasks' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "description": "string",
+    "executors": [
+      {
+        "image": "alpine",
+        "command": ["grep", "Hello"],
+        "stdin": "/data/file1.txt",
+        "stdout": "/data/file2.txt"
+      },
+      {
+        "image": "alpine",
+        "command": ["tr", "'\''a-z'\''", "'\''A-Z'\''"],
+        "stdin": "/data/file2.txt",
+        "stdout": "/data/file3.txt"
+      }
+    ],
+    "inputs": [
+      {
+        "url": "s3://test/testfile.txt",
+        "type": "FILE",
+        "path": "/data/file1.txt"
+      }
+    ],
+    "outputs": [
+      {
+        "url": "s3://test/testfile-out.txt",
+        "path": "/data/file3.txt",
+        "type": "FILE"
+      }
+    ],
+    "resources": {
+      "cpu_cores": 0.5,
+      "disk_gb": 0.01,
+      "preemptible": false
+    },
+    "tags": {
+      "WORKFLOW_ID": "cwl-01",
+      "PROJECT_GROUP": "my-lab"
+    },
+    "volumes": [
+      "/data"
+    ]
+  }'
+```
+
+Example response:
+
+```json
+{
+  "id": "task-xxxxxxxx"
+}
+```
+
+### 8. Important note about TESK access
+
+The uploaded notes mention that after repeated `helm upgrade --install` commands, the **service IP** may change. Since the service is configured as **NodePort** with `node_port: 31567`, the more stable public access method is usually:
+
+```text
+http://<NODE_IP>:31567/v1/tasks
+```
+
+instead of relying on an internal ClusterIP. That makes the README more reliable for users deploying on their own cluster. This is an inference based on your TESK service configuration and example commands. 
+
+---
+
+## Recommended Dependency Order
+
+Deploy the dependencies in this order:
+
+1. NFS
+2. MinIO
+3. PostgreSQL
+4. TESK
+
+After all four are ready, continue with:
+
+5. Schema-API
+6. Schema-Lab
 
 ---
 
