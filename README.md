@@ -396,9 +396,9 @@ tesk:
   image: docker.io/elixircloud/tesk-api:1.1.0
   port: 8080
   taskmaster_image_name: docker.io/elixircloud/tesk-core-taskmaster
-  taskmaster_image_version: v0.10.4
-  taskmaster_filer_image_name: pankalos/tesk-core-filer-v0.10.4
-  taskmaster_filer_image_version: patched
+  taskmaster_image_version: latest
+  taskmaster_filer_image_name: docker.io/elixircloud/tesk-core-filer
+  taskmaster_filer_image_version: latest
 
 service:
   type: NodePort
