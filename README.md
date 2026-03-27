@@ -136,7 +136,7 @@ kubectl get pv,pvc -A
 
 ## 2. Quick Deployment Guide: MinIO
 
-MinIO is used here as the S3-compatible storage backend. The deployment uses the **MinIO Operator** and a **Tenant**, both installed from local Helm charts. 
+[MinIO](https://docs.min.io/enterprise/aistor-object-store/installation/kubernetes/) is used here as the S3-compatible storage backend. The deployment uses the **MinIO Operator** and a **Tenant**, both installed from local Helm charts. 
 
 ### 1. Install the MinIO Operator
 
@@ -263,12 +263,12 @@ These values can then be used in your Schema-API secrets.
 
 ## 3. Quick Deployment Guide: PostgreSQL
 
-Schema-API requires PostgreSQL. In this setup, PostgreSQL is deployed with **Crunchy Postgres for Kubernetes** using a Helm-based examples repository. The guide assumes that `storageclass-nfs` is the cluster default, or that you explicitly set it in the values file. 
+Schema-API requires PostgreSQL. In this setup, PostgreSQL is deployed with [**Crunchy Postgres for Kubernetes**](https://access.crunchydata.com/documentation/postgres-operator/latest/tutorials/basic-setup/create-cluster) using a Helm-based examples repository. The guide assumes that `storageclass-nfs` is the cluster default, or that you explicitly set it in the values file. 
 
 ### 1. Clone the examples repository
 
 ```bash
-git clone https://github.com/pankalos/postgres-operator-examples
+git clone https://github.com/CrunchyData/postgres-operator-examples.git
 cd postgres-operator-examples
 ```
 
@@ -466,6 +466,10 @@ Expected response:
 
 ### 7. Submit a test task using S3 input/output
 
+The Following looks for testfile.txt in the s3 and 
+1. Filters lines that contain "Hello"
+2. Re-writes them to uppercase
+
 Example request:
 
 ```bash
@@ -531,8 +535,6 @@ The uploaded notes mention that after repeated `helm upgrade --install` commands
 ```text
 http://<NODE_IP>:31567/v1/tasks
 ```
-
-instead of relying on an internal ClusterIP. That makes the README more reliable for users deploying on their own cluster. This is an inference based on your TESK service configuration and example commands. 
 
 ---
 
