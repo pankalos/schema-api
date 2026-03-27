@@ -1,0 +1,680 @@
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: schema-api
+  labels:
+    app: schema-api
+
+---
+
+# RBAC
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: schema-api-resource-creator
+  namespace: schema-api
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: schema-api-resource-creator
+  namespace: schema-api
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - delete
+      - deletecollection
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: schema-api-resource-creator
+  namespace: schema-api
+subjects:
+  - kind: ServiceAccount
+    name: schema-api-resource-creator
+    namespace: schema-api
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: schema-api-resource-creator
+
+---
+#######################################################################################
+###################### DB Profile Creds ###############################################
+#######################################################################################
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-profile-influx-db
+  namespace: schema-api
+type: Opaque
+stringData:
+  INFLUX_URL: "http://192.168.2.9:8086"   # Change according to your inxlux url
+  INFLUX_ORG: "..."                       # Change according to your influx organization
+  INFLUX_TOKEN: "..."                     # Change according to your influx token
+
+---
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-profile-timescale-db
+  namespace: schema-api
+type: Opaque
+stringData:
+  PSQL_HOST: "http://192.168.2.9"         # Change according to your timescale Host
+  PSQL_PORT: "5432"                       # Change according to your timescale Port
+  PSQL_DBNAME: "timescaledb_1"            # Change according to your timescale Database name
+  PSQL_USER: "..."                        # Change according to your timescale Database user
+  PSQL_PASSWORD: "..."                    # Change according to your timescale Database password
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: schema-api-db-profile-names-config
+  namespace: schema-api
+  labels:
+    app: schema-api
+data:
+  SCHEMA_API_STREAMING_DB_PROFILES: |             ### {Key: value} (value must match the secret profile name!)
+    {"timescaleDB":"db-profile-timescale-db", "influxDB":"db-profile-influx-db"}
+
+#######################################################################################
+###################### DB Profile Creds ###############################################
+#######################################################################################
+
+---
+
+#  Schema-API uses Postgress to store states and data. 
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: schema-api
+  name: schema-api-db-secret
+  labels:
+    app: schema-api
+type: Opaque
+stringData:
+  POSTGRES_DB: "schema"                                        # Change according to your database credentials
+  POSTGRES_USER: "..."                                         # Change according to your database credentials
+  POSTGRES_PASSWORD: "..."                                     # Change according to your database credentials
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: schema-api-secret-key
+  namespace: schema-api
+  labels:
+    app: schema-api
+data:
+  secretKey: sdfre9YGUU...df98UT=                          # A randomly chosen schema api secret key in base64 format.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-credentials
+  namespace: schema-api
+  labels:
+    app: schema-api
+data:
+  access_key_id: "s3-key-id-in-base64="                     # Change according to your S3 credentials. Must be in base64!
+  secret_access_key: "s3-access-key-in-base64=="            # Change according to your S3 credentials. Must be in base64!
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: schema-api-config
+  namespace: schema-api
+  labels:
+    app: schema-api
+data:
+  allowedHosts: "127.0.0.1,localhost,192.168.2.9"       # Configure based on the allowed hosts of your environment. ADD Host from NodePort After Nodeport creation!!!
+  s3Url: "http://192.168.2.9:32707"                     # Change based on the ***PUBLIC!*** domain of the S3 API(svc minio) in your environment 
+  slugPattern: "[-_a-zA-Z0-9]+"
+  s3UseSSL: "no"
+  s3MaxPartSize: "104857600"
+  filesEnabled: "yes"
+  authEnabled: "yes"
+  taskApiClass: "api.taskapis.TesTaskApi"
+  # teskEndpoint: "http://tesk.k8s.internal.schema.athenarc.gr/"
+  teskEndpoint: "http://192.168.2.9:31567/"                      # Change to TESK endpoint.
+  # corsOrigins: "http://lab.k8s.internal.schema.athenarc.gr"    # URL of SCHEMA-LAB (PUBLIC)
+  corsOrigins: "http://192.168.2.9:30100"                        # URL of SCHEMA-LAB (PUBLIC)
+  userThrottleRate: "200/minute"
+  updateStateOnTasksListing: "no"
+  cacheEnabled: "yes"
+  cacheTimeout: "15"
+  redisHost: "redis-cache"
+  managerClassArgs: '{"redis_tesk_06_2025": {"host":"redis-cache"}}'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: 
+  name: schema-api-managers-config
+  namespace: schema-api
+  labels:
+    app: schema-api
+data:
+  managers.yaml: |
+    managers:
+      - name: redis_tesk_06_2025
+        class_path: 'core.managers.redis.RedisExecutionManager'
+        enabled: yes
+        configuration:
+          delegate_tasks: yes
+          workflows:
+            languages:
+              - language: SNWL
+                versions: '*'
+                use_definition: yes
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-api
+  namespace: schema-api
+  labels:
+    app: schema-api
+    role: service
+    purpose: main
+spec:
+  strategy:
+    type: Recreate
+  replicas: 1
+  selector:
+    matchLabels:
+      app: schema-api
+      role: service
+      purpose: main
+  template:
+    metadata:
+      labels:
+        app: schema-api
+        role: service
+        purpose: main
+    spec:
+      serviceAccountName: schema-api-resource-creator
+      containers:
+        # - image: schemaservices/schema-api:ssdbm2025
+        - image: pankalos/schema-api:latest
+          imagePullPolicy: Always
+          name: schema-api
+          volumeMounts:
+            - name: managers-config-volume
+              mountPath: /config
+              readOnly: true
+          env:
+            - name: SCHEMA_API_DB_HOST
+              value: schema-primary.postgres-operator.svc.cluster.local                         # Change according to your environment's Postgres' service URL
+            - name: SCHEMA_API_DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: schema-api-db-secret
+                  key: POSTGRES_DB
+            - name: SCHEMA_API_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: schema-api-db-secret
+                  key: POSTGRES_USER
+            - name: SCHEMA_API_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: schema-api-db-secret
+                  key: POSTGRES_PASSWORD
+            - name: SCHEMA_API_DB_PORT
+              value: "5432"
+            - name: SCHEMA_API_ALLOWED_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: allowedHosts
+            - name: SCHEMA_API_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: schema-api-secret-key
+                  key: secretKey
+            - name: SCHEMA_API_USE_FILES
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: filesEnabled
+            - name: SCHEMA_API_USE_AUTH
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: authEnabled
+            - name: SCHEMA_API_S3_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: s3Url
+            - name: SCHEMA_API_S3_USE_SSL
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: s3UseSSL
+            - name: SCHEMA_API_S3_VERIFY_SSL
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: s3UseSSL
+            - name: SCHEMA_API_S3_MAX_PART_SIZE_BYTES
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: s3MaxPartSize
+            - name: SCHEMA_API_USERNAME_SLUG_PATTERN
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: slugPattern
+            - name: SCHEMA_API_CONTEXT_NAME_SLUG_PATTERN
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: slugPattern
+            - name: SCHEMA_API_TASK_API_CLASS
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: taskApiClass
+            - name: SCHEMA_API_TASK_API_GET_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: teskEndpoint
+            - name: SCHEMA_API_TASK_API_CREATE_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: teskEndpoint
+            - name: SCHEMA_API_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access_key_id
+            - name: SCHEMA_API_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret_access_key
+            - name: SCHEMA_API_USER_THROTTLE_RATE
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: userThrottleRate
+            - name: SCHEMA_API_CORS_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: corsOrigins
+            - name: SCHEMA_API_UPDATE_STATE_ON_TASKS_LISTING
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: updateStateOnTasksListing
+            - name: SCHEMA_API_ENABLE_CACHE
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: cacheEnabled
+            - name: SCHEMA_API_CACHE_REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: redisHost
+            - name: SCHEMA_API_CACHE_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: cacheTimeout
+            - name: SCHEMA_API_WORKFLOWS_MANAGER_CLASS_ARGS
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: managerClassArgs
+            - name: SCHEMA_API_MANAGER_CONFIG_PATH
+              value: /config/managers.yaml
+
+            # <------------- ADDED ENVS ---------------->
+            - name: SCHEMA_API_STREAMING_DB_PROFILES                    ## <---- DB Profiles
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-db-profile-names-config
+                  key: SCHEMA_API_STREAMING_DB_PROFILES
+
+            - name: SCHEMA_API_TIMESCALE_LISTENER_IMAGE                 ##  <----- Timescale Listener image
+              value: "pankalos/timescaledb-listener:latest"
+
+            - name: SCHEMA_API_INFLUX_LISTENER_IMAGE
+              value: "pankalos/influxdb-listener:latest"                ##  <----- Influx Listener image
+
+
+            - name: SCHEMA_API_INFLUX_LISTENER_SCRIPT
+              value: "influxdb-listener.py"                             ### Must exist in image
+
+            - name: SCHEMA_API_TIMESCALE_LISTENER_SCRIPT                ### Must exist in image
+              value: "timescaledb-listener.py"
+
+            - name: SCHEMA_API_STREAMING_NAMESPACE          ## <------ Listener, Modeler Pod Namespace 
+              value: "schema-api"
+
+
+      volumes:
+        - name: managers-config-volume
+          configMap:
+            name: schema-api-managers-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-api-watch
+  namespace: schema-api
+  labels:
+    app: schema-api
+    role: synchronizer
+    purpose: auxiliary
+spec:
+  strategy:
+    type: Recreate
+  replicas: 1
+  selector:
+    matchLabels:
+      app: schema-api
+      role: synchronizer
+      purpose: auxiliary
+  template:
+    metadata:
+      labels:
+        app: schema-api
+        role: synchronizer
+        purpose: auxiliary
+    spec:
+      containers:
+        # - image: schemaservices/schema-api:4292160
+        - image: pankalos/schema-api:latest
+          imagePullPolicy: Always
+          name: schema-api-watch
+          command:
+            - 'python'
+            - 'manage.py'
+            - 'watch'
+            - '-v'
+            - '3'
+            - 'executions'
+            - '-i'
+            - '5'
+          volumeMounts:
+            - name: managers-config-volume
+              mountPath: /config
+              readOnly: true
+          env:
+            - name: SCHEMA_API_DB_HOST
+              value: schema-primary.postgres-operator.svc.cluster.local                         # Change according to your environment's Postgres' service URL
+            - name: SCHEMA_API_DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: schema-api-db-secret
+                  key: POSTGRES_DB
+            - name: SCHEMA_API_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: schema-api-db-secret
+                  key: POSTGRES_USER
+            - name: SCHEMA_API_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: schema-api-db-secret
+                  key: POSTGRES_PASSWORD
+            - name: SCHEMA_API_DB_PORT
+              value: "5432"
+            - name: SCHEMA_API_ALLOWED_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: allowedHosts
+            - name: SCHEMA_API_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: schema-api-secret-key
+                  key: secretKey
+            - name: SCHEMA_API_USE_FILES
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: filesEnabled
+            - name: SCHEMA_API_USE_AUTH
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: authEnabled
+            - name: SCHEMA_API_S3_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: s3Url
+            - name: SCHEMA_API_S3_USE_SSL
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: s3UseSSL
+            - name: SCHEMA_API_S3_VERIFY_SSL
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: s3UseSSL
+            - name: SCHEMA_API_S3_MAX_PART_SIZE_BYTES
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: s3MaxPartSize
+            - name: SCHEMA_API_USERNAME_SLUG_PATTERN
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: slugPattern
+            - name: SCHEMA_API_CONTEXT_NAME_SLUG_PATTERN
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: slugPattern
+            - name: SCHEMA_API_TASK_API_CLASS
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: taskApiClass
+            - name: SCHEMA_API_TASK_API_GET_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: teskEndpoint
+            - name: SCHEMA_API_TASK_API_CREATE_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: teskEndpoint
+            - name: SCHEMA_API_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access_key_id
+            - name: SCHEMA_API_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret_access_key
+            - name: SCHEMA_API_USER_THROTTLE_RATE
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: userThrottleRate
+            - name: SCHEMA_API_CORS_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: corsOrigins
+            - name: SCHEMA_API_UPDATE_STATE_ON_TASKS_LISTING
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: updateStateOnTasksListing
+            - name: SCHEMA_API_ENABLE_CACHE
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: cacheEnabled
+            - name: SCHEMA_API_CACHE_REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: redisHost
+            - name: SCHEMA_API_CACHE_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: cacheTimeout
+            - name: SCHEMA_API_WORKFLOWS_MANAGER_CLASS_ARGS
+              valueFrom:
+                configMapKeyRef:
+                  name: schema-api-config
+                  key: managerClassArgs
+            - name: SCHEMA_API_MANAGER_CONFIG_PATH
+              value: /config/managers.yaml
+      volumes:
+        - name: managers-config-volume
+          configMap:
+            name: schema-api-managers-config
+
+---
+
+apiVersion: v1
+kind: Service                 # Schema Api Service 
+metadata:
+  name: schema-api
+  namespace: schema-api
+  labels:
+    app: schema-api
+spec:
+  selector:
+    app: schema-api
+    role: service
+    purpose: main
+  # ports:
+  #   - protocol: TCP
+  #     port: 8000
+  type: NodePort               # <----- NodePort        
+  ports:
+    - targetPort: 8000
+      port: 8000
+      nodePort: 30090
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-api-cache
+  namespace: schema-api
+  labels:
+    app: schema-api
+    role: cache
+    purpose: main
+    provider: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: schema-api
+      role: cache
+      purpose: main
+      provider: redis
+  template:
+    metadata:
+      labels:
+        app: schema-api
+        role: cache
+        purpose: main
+        provider: redis
+    spec:
+      containers:
+        - image: redislabs/redisearch:latest
+          name: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cache
+  namespace: schema-api
+  labels:
+    app: schema-api
+spec:
+  selector:
+    app: schema-api
+    role: cache
+    purpose: main
+    provider: redis
+  ports:
+    - protocol: TCP
+      port: 6379
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-workers
+  namespace: schema-api
+  labels:
+    app: schema-api
+    role: worker
+    purpose: main
+    backend: tesk
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: schema-api
+      role: worker
+      purpose: main
+      backend: tesk
+  template:
+    metadata:
+      labels:
+        app: schema-api
+        role: worker
+        purpose: main
+        backend: tesk
+    spec:
+      containers:
+        - image: schemaservices/schema-utils:0.1.0
+          name: schema-worker
+          command:
+            - 'python'
+            - '-m'
+            - 'brokers.tesk'
+            - '-v'
+            - '3'
+            - 'redis://redis-cache'
+            # - 'http://tesk.example.com'                                  # Change according to your environment's TESK API URL
+            - 'http://tesk-api.tesk.svc.cluster.local:8080'                # Change according to your environment's TESK API URL
