@@ -560,8 +560,8 @@ After all four are ready, continue with:
 
 The following template files are provided in this repository and should be filled in with values matching your environment:
 
-- `schema-api-local-template.yaml`
-- `schema-lab-local.yaml`
+- `/deployment/k8s/schema-api-local-template.yaml`
+- `/deployment/k8s/schema-lab-local.yaml`
 
 > **Note:** `schema-api-local-template.yaml` is already provided in this repository. Edit the existing file before applying it.
 
