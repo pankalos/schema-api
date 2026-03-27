@@ -10,7 +10,7 @@ To deploy the platform, you need the following components:
 2. A storage class that supports at least RWO mode
 3. A storage backend for exchanging input/output with the external world
 4. [TESK](https://github.com/elixir-cloud-aai/TESK?tab=readme-ov-file)
-5. PostgreSQL for Schema API backend
+5. PostgreSQL for the Schema-API backend
 6. [Schema-API](https://schema.athenarc.gr/docs/schema-api/)
 7. Schema-Lab
 
@@ -20,18 +20,18 @@ To deploy the platform, you need the following components:
 
 The following quick guides describe one working deployment flow for the required dependencies of **Schema-API** and **Schema-Lab**:
 
-1. NFS storage provisioner
-2. MinIO
-3. PostgreSQL
-4. TESK
+1. [NFS](https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner.git) storage provisioner
+2. [MinIO](https://docs.min.io/enterprise/aistor-object-store/installation/kubernetes/)
+3. [PostgreSQL](https://access.crunchydata.com/documentation/postgres-operator/latest/tutorials/basic-setup/create-cluster)
+4. [TESK](https://github.com/elixir-cloud-aai/TESK.git)
 
-> **Note:** These steps reflect the deployment approach used in this project and the attached template instructions.
+> **Note:** These steps reflect one working deployment approach for this project.
 
 ---
 
 ## 1. Quick Deployment Guide: NFS
 
-This NFS provisioner is used to provide a storage class that supports dynamic PVC/PV creation. In this setup, the storage class name is `storageclass-nfs`.
+This [NFS](https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner.git) provisioner is used to provide a storage class that supports dynamic PVC/PV creation. In this setup, the storage class name is `storageclass-nfs`.
 
 ### 1. Clone the repository
 
@@ -130,13 +130,13 @@ Check that the PVC and PV are created:
 kubectl get pv,pvc -A
 ```
 
-> Deleting the PVC will also delete the dynamically provisioned PV and its data. If the provisioner deployment is removed, existing PVs become unusable until it is restored.
+> Deleting the PVC also deletes the dynamically provisioned PV and its data.
 
 ---
 
 ## 2. Quick Deployment Guide: MinIO
 
-[MinIO](https://docs.min.io/enterprise/aistor-object-store/installation/kubernetes/) is used here as the S3-compatible storage backend. The deployment uses the **MinIO Operator** and a **Tenant**, both installed from local Helm charts. 
+[MinIO](https://docs.min.io/enterprise/aistor-object-store/installation/kubernetes/) is used here as the S3-compatible storage backend. The deployment uses the **MinIO Operator** and a **Tenant**, both installed from local Helm charts.
 
 ### 1. Install the MinIO Operator
 
@@ -204,14 +204,16 @@ Check the service:
 kubectl get svc -n minio
 ```
 
-If `requestAutoCert: false`, access the console over HTTP using the NodePort shown for the console service. If `requestAutoCert: true`, use HTTPS instead. The uploaded instructions use credentials like:
+If `requestAutoCert: false`, access the console over HTTP using the NodePort shown for the console service. If `requestAutoCert: true`, use HTTPS instead.
+
+Example credentials used in local testing:
 
 ```text
 username: minio
 password: minio-password
 ```
 
-> Keep real credentials out of the README and replace them with placeholders in your public docs. 
+> Do not commit real credentials to GitHub. Replace them with placeholders in public documentation.
 
 ### 4. Verify MinIO with `mc`
 
@@ -257,13 +259,13 @@ echo -n '<ACCESS_KEY>' | base64
 echo -n '<SECRET_KEY>' | base64
 ```
 
-These values can then be used in your Schema-API secrets. 
+These values can then be used in your Schema-API secrets.
 
 ---
 
 ## 3. Quick Deployment Guide: PostgreSQL
 
-Schema-API requires PostgreSQL. In this setup, PostgreSQL is deployed with [**Crunchy Postgres for Kubernetes**](https://access.crunchydata.com/documentation/postgres-operator/latest/tutorials/basic-setup/create-cluster) using a Helm-based examples repository. The guide assumes that `storageclass-nfs` is the cluster default, or that you explicitly set it in the values file. 
+Schema-API requires PostgreSQL. In this setup, PostgreSQL is deployed with [**Crunchy Postgres for Kubernetes**](https://access.crunchydata.com/documentation/postgres-operator/latest/tutorials/basic-setup/create-cluster) using a Helm-based examples repository.
 
 ### 1. Clone the examples repository
 
@@ -369,7 +371,7 @@ CREATE SCHEMA public;
 
 ## 4. Quick Deployment Guide: TESK
 
-[TESK](https://github.com/elixir-cloud-aai/TESK/tree/master) is the task execution backend used by Schema-API. In this setup it is configured to use **S3 storage**, **MinIO credentials**, and the `storageclass-nfs` storage class. 
+[TESK](https://github.com/elixir-cloud-aai/TESK/tree/master) is the task execution backend used by Schema-API. In this setup it is configured to use **S3 storage**, **MinIO credentials**, and the `storageclass-nfs` storage class.
 
 ### 1. Clone TESK
 
@@ -382,7 +384,7 @@ cd TESK
 
 Edit `charts/tesk/values.yaml` and update the deployment settings.
 
-Example values from the uploaded guide:
+Example values:
 
 ```yaml
 host_name: ""
@@ -428,7 +430,7 @@ aws_secret_access_key=<MINIO_SECRET_KEY>
 
 ### 4. Create a test object in MinIO
 
-Example test file contents:
+Example file contents:
 
 ```text
 Hello from Kubernetes storage
@@ -438,7 +440,7 @@ Hello again here!
 Hi!
 ```
 
-Upload it to a bucket, for example `s3://test/testfile.txt`, before testing TESK. 
+Upload it to a bucket, for example `s3://test/testfile.txt`, before testing TESK.
 
 ### 5. Create the namespace and install TESK
 
@@ -466,11 +468,11 @@ Expected response:
 
 ### 7. Submit a test task using S3 input/output
 
-The Following looks for testfile.txt in the s3 and 
-1. Filters lines that contain "Hello"
-2. Re-writes them to uppercase
+The following example looks for `testfile.txt` in S3 and:
 
-Example request:
+1. Filters lines that contain `Hello` word
+2. Rewrites them to uppercase
+3. Creates a new file testfile-out.txt to s3 and writes the output
 
 ```bash
 curl --location 'http://<NODE_IP>:31567/v1/tasks' \
@@ -530,7 +532,7 @@ Example response:
 
 ### 8. Important note about TESK access
 
-The uploaded notes mention that after repeated `helm upgrade --install` commands, the **service IP** may change. Since the service is configured as **NodePort** with `node_port: 31567`, the more stable public access method is usually:
+If TESK is exposed as a NodePort, the most stable public access method is usually:
 
 ```text
 http://<NODE_IP>:31567/v1/tasks
@@ -544,8 +546,8 @@ Deploy the dependencies in this order:
 
 1. NFS
 2. MinIO
-3. PostgreSQL
-4. TESK
+3. TESK
+4. PostgreSQL
 
 After all four are ready, continue with:
 
@@ -556,55 +558,172 @@ After all four are ready, continue with:
 
 ## Deployment Files
 
-The following template files are provided and should be filled in with values matching your environment:
+The following template files are provided in this repository and should be filled in with values matching your environment:
 
 - `schema-api-local-template.yaml`
 - `schema-lab-local.yaml`
 
+> **Note:** `schema-api-local-template.yaml` is already provided in this repository. Edit the existing file before applying it.
+
 ---
 
-## 1. Configure Schema-API
+## 1. Prepare `schema-api-local-template.yaml`
 
-Edit `schema-api-local-template.yaml` and update the values according to your environment.
+Open the provided `schema-api-local-template.yaml` file and update the values according to your environment.
+
+### 1.1 DB profile credentials
+
+Create the DB profiles accordingly. These are the profiles that streaming tasks connect to.
+
+Update these values according to your environment:
+
+#### InfluxDB example
+
+```yaml
+INFLUX_URL: "http://<INFLUX_HOST>:8086"
+INFLUX_ORG: "<INFLUX_ORG>"
+INFLUX_TOKEN: "<INFLUX_TOKEN>"
+```
+
+#### Timescale / PostgreSQL example
+
+```yaml
+PSQL_HOST: "http://<TIMESCALE_HOST>"
+PSQL_PORT: "5432"
+PSQL_DBNAME: "<TIMESCALE_DBNAME>"
+PSQL_USER: "<TIMESCALE_USER>"
+PSQL_PASSWORD: "<TIMESCALE_PASSWORD>"
+```
+
+If you have more profiles, add them to the `schema-api-db-profile-names-config` ConfigMap in:
+
+```yaml
+SCHEMA_API_STREAMING_DB_PROFILES
+```
+
+### 1.2 Schema-API PostgreSQL secret
+
+Schema-API uses PostgreSQL to store states and data. This PostgreSQL instance is used by Schema-API for tasks and workflows.
+
+Update the secret values:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: schema-api
+  name: schema-api-db-secret
+type: Opaque
+stringData:
+  POSTGRES_DB: "<SCHEMA_DB_NAME>"
+  POSTGRES_USER: "<SCHEMA_DB_USER>"
+  POSTGRES_PASSWORD: "<SCHEMA_DB_PASSWORD>"
+```
+
+### 1.3 Schema-API secret key
+
+Set a random secret key for Schema-API in base64 format:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: schema-api-secret-key
+  namespace: schema-api
+data:
+  secretKey: "<BASE64_SCHEMA_API_SECRET_KEY>"
+```
+
+### 1.4 S3 credentials
+
+Update the S3 / MinIO credentials using base64-encoded values:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-credentials
+  namespace: schema-api
+data:
+  access_key_id: "<BASE64_S3_ACCESS_KEY_ID>"
+  secret_access_key: "<BASE64_S3_SECRET_ACCESS_KEY>"
+```
+
+### 1.5 Schema-API ConfigMap
+
+Update the `schema-api-config` ConfigMap according to your environment.
 
 At minimum, review and update:
 
-- PostgreSQL connection details
-- S3/MinIO credentials
 - `allowedHosts`
 - `s3Url`
+- `s3UseSSL`
 - `teskEndpoint`
 - `corsOrigins`
-- secret keys
-- any image names or database profile settings you use
 
-### Important settings to review
+Example:
 
-#### Database
-Set the PostgreSQL database name, user, password, host, and port.
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: schema-api-config
+  namespace: schema-api
+data:
+  allowedHosts: "127.0.0.1,localhost,<SCHEMA_API_HOST>"
+  s3Url: "http://<MINIO_API_HOST>:<MINIO_API_PORT>"
+  slugPattern: "[-_a-zA-Z0-9]+"
+  s3UseSSL: "no"
+  s3MaxPartSize: "104857600"
+  filesEnabled: "yes"
+  authEnabled: "yes"
+  taskApiClass: "api.taskapis.TesTaskApi"
+  teskEndpoint: "http://<TESK_HOST>:<TESK_NODEPORT>/"
+  corsOrigins: "http://<SCHEMA_LAB_HOST>:<SCHEMA_LAB_NODEPORT>"
+  userThrottleRate: "200/minute"
+  updateStateOnTasksListing: "no"
+  cacheEnabled: "yes"
+  cacheTimeout: "15"
+  redisHost: "redis-cache"
+```
 
-#### S3 / MinIO
-Set:
+> **Important:** If you expose Schema-API using `NodePort`, first deploy it, get the public host/IP, add that host to `allowedHosts`, and then re-apply the file.
 
-- S3 endpoint URL
-- access key
-- secret key
-- SSL settings
+### 1.6 Schema-API deployment database host
 
-#### Allowed Hosts
-If you expose Schema-API using **NodePort**, make sure the service IP or hostname is included in `allowedHosts`.
+In the `schema-api` deployment, set:
 
-#### CORS
-Set `corsOrigins` to the public URL of Schema-Lab.
+```yaml
+- name: SCHEMA_API_DB_HOST
+  value: <POSTGRES_SERVICE_URL>
+```
 
-#### TESK Endpoint
-Set `teskEndpoint` to the reachable TESK API endpoint.
+### 1.7 Schema-API watch deployment database host
+
+In the `schema-api-watch` deployment, set:
+
+```yaml
+- name: SCHEMA_API_DB_HOST
+  value: <POSTGRES_SERVICE_URL>
+```
+
+### 1.8 Schema workers TESK URL
+
+In the `schema-workers` deployment, update the TESK API URL.
+
+Example in-cluster URL:
+
+```yaml
+- 'http://tesk-api.tesk.svc.cluster.local:8080'
+```
+
+If you use a public NodePort instead, change it accordingly.
 
 ---
 
 ## 2. Apply the Schema-API Deployment
 
-After filling in the template, apply it:
+After filling in `schema-api-local-template.yaml`, apply it:
 
 ```bash
 kubectl apply -f schema-api-local-template.yaml
@@ -633,14 +752,28 @@ kubectl rollout restart deployment/schema-api-watch -n schema-api
 
 It is possible that the `schema-api-watch` pod enters `CrashLoopBackOff` before migrations are applied. In that case, run the migrations manually from the `schema-api` pod.
 
-Example:
+### Check the pods
 
 ```bash
 kubectl get pods -n schema-api
-kubectl exec -n schema-api -it <schema-api-pod-name> -- sh
 ```
 
-Inside the container:
+Example output:
+
+```text
+pod/schema-api-xxxxx                1/1   Running
+pod/schema-api-cache-xxxxx          1/1   Running
+pod/schema-api-watch-xxxxx          0/1   CrashLoopBackOff
+pod/schema-workers-xxxxx            1/1   Running
+```
+
+### Enter the Schema-API pod
+
+```bash
+kubectl exec -n schema-api -it <SCHEMA_API_POD> -- sh
+```
+
+### Run migrations
 
 ```bash
 python manage.py migrate
@@ -652,16 +785,13 @@ Wait until the pods become healthy:
 kubectl get pods -n schema-api
 ```
 
-Example output may initially look like this:
-
-```text
-pod/schema-api-xxxxx                1/1   Running
-pod/schema-api-cache-xxxxx          1/1   Running
-pod/schema-api-watch-xxxxx          0/1   CrashLoopBackOff
-pod/schema-workers-xxxxx            1/1   Running
-```
-
 After migrations complete, `schema-api-watch` should recover.
+
+If needed, restart the watcher:
+
+```bash
+kubectl rollout restart deployment/schema-api-watch -n schema-api
+```
 
 ---
 
@@ -672,7 +802,7 @@ Edit `schema-lab-local.yaml` and set the Schema-API URL accordingly.
 Example:
 
 ```yaml
-schemaApiUrl: http://<NODE_IP>:30090
+schemaApiUrl: http://<SCHEMA_API_HOST>:<SCHEMA_API_NODEPORT>
 ```
 
 Then apply the file:
@@ -695,7 +825,7 @@ kubectl get svc -n schema-api
 Enter the Schema-API pod:
 
 ```bash
-kubectl exec -n schema-api -it <schema-api-pod-name> -- sh
+kubectl exec -n schema-api -it <SCHEMA_API_POD> -- sh
 ```
 
 Register an application service:
@@ -719,7 +849,7 @@ Save the generated token securely. Do **not** commit it to Git.
 Use the application service token to create a new context.
 
 ```bash
-curl --location 'http://<NODE_IP>:30090/api_auth/contexts' \
+curl --location 'http://<SCHEMA_API_HOST>:<SCHEMA_API_NODEPORT>/api_auth/contexts' \
   --header 'Content-Type: application/json' \
   --header 'Authorization: Bearer <APPLICATION_SERVICE_TOKEN>' \
   --data '{
@@ -751,7 +881,7 @@ Example response:
 ## 7. Create a User
 
 ```bash
-curl --location 'http://<NODE_IP>:30090/api_auth/users' \
+curl --location 'http://<SCHEMA_API_HOST>:<SCHEMA_API_NODEPORT>/api_auth/users' \
   --header 'Content-Type: application/json' \
   --header 'Authorization: Bearer <APPLICATION_SERVICE_TOKEN>' \
   --data '{
@@ -774,7 +904,7 @@ Example response:
 ## 8. Register the User in the Context
 
 ```bash
-curl --location 'http://<NODE_IP>:30090/api_auth/contexts/context0/users' \
+curl --location 'http://<SCHEMA_API_HOST>:<SCHEMA_API_NODEPORT>/api_auth/contexts/context0/users' \
   --header 'Content-Type: application/json' \
   --header 'Authorization: Bearer <APPLICATION_SERVICE_TOKEN>' \
   --data '{
@@ -812,7 +942,7 @@ Example response:
 ## 9. Issue a Token for the User
 
 ```bash
-curl --location 'http://<NODE_IP>:30090/api_auth/contexts/context0/users/user0/tokens' \
+curl --location 'http://<SCHEMA_API_HOST>:<SCHEMA_API_NODEPORT>/api_auth/contexts/context0/users/user0/tokens' \
   --header 'Content-Type: application/json' \
   --header 'Authorization: Bearer <APPLICATION_SERVICE_TOKEN>' \
   --data '{
@@ -841,12 +971,13 @@ Store the user token securely.
 ## 10. Create the User Bucket in MinIO / S3
 
 To enable upload/download functionality, create a bucket in MinIO/S3 using the UUID associated with the created user.
-(Or just try to upload a file in the S3. If everything goes well you will not need the following)
+
+You can also first try to upload a file through the normal flow. If that works, you may not need to inspect PostgreSQL manually.
 
 First, enter the PostgreSQL pod:
 
 ```bash
-kubectl exec -it <postgres-pod-name> -n postgres-operator -- psql
+kubectl exec -it <POSTGRES_POD> -n postgres-operator -- psql
 ```
 
 Then connect to the Schema database:
@@ -882,6 +1013,7 @@ kubectl rollout restart deployment/schema-api-watch -n schema-api
 ```
 
 ### Schema-Lab cannot reach Schema-API
+
 Check the following:
 
 - `schemaApiUrl` in `schema-lab-local.yaml`
@@ -889,19 +1021,23 @@ Check the following:
 - service exposure (`NodePort`, ingress, or load balancer)
 
 ### Requests fail with host validation errors
+
 Make sure the Schema-API public host/IP is included in:
 
 ```yaml
 allowedHosts
 ```
+- Try Minio with `requestAutoCert: false`
 
 ### File upload/download does not work
+
 Check the following:
 
 - MinIO/S3 credentials
 - bucket creation
 - bucket name matches the correct user UUID
 - `s3Url` is reachable from Schema-API
+- Try Minio with `requestAutoCert: false`
 
 ---
 
@@ -926,4 +1062,4 @@ A recommended deployment order is:
 6. Run database migrations
 7. Fill in and apply `schema-lab-local.yaml`
 8. Register application service, context, and users
-9. Create the S3 bucket for each user UUID
+9. Create the S3 bucket for each user UUID or try to upload a file first from UI.
