@@ -573,29 +573,17 @@ The following template files are provided in this repository and should be fille
 
 Instead of using a prebuilt image, you can build Schema-API from source and then deploy it with Kubernetes.
 
-#### 1. Update the `Pipfile`
-
-In the `[packages]` section of the `Pipfile`, add:
-
-```toml
-kubernetes = "*"
-```
 
 > **Note:** This project was built with **Python 3.11**.
 
-#### 2. Generate `Pipfile.lock`
 
-```bash
-pipenv lock
-```
-
-#### 3. Install dependencies
+#### 1. Install dependencies
 
 ```bash
 pipenv install
 ```
 
-#### 4. Copy the Dockerfile
+#### 2. Copy the Dockerfile
 
 Copy the deployment Dockerfile into the project root:
 
@@ -604,7 +592,7 @@ from: schema-api/deployment/Dockerfile
 to:   schema-api/Dockerfile
 ```
 
-#### 5. Build the Docker image
+#### 3. Build the Docker image
 
 From the `schema-api` directory, run:
 
@@ -612,7 +600,7 @@ From the `schema-api` directory, run:
 docker build -t <YOUR_SCHEMA_API_IMAGE>:<TAG> .
 ```
 
-#### 6. Update the Kubernetes deployment file
+#### 4. Update the Kubernetes deployment file
 
 Open:
 
@@ -622,7 +610,7 @@ schema-api/deployment/k8s/schema-api-local-template.yaml
 
 and replace the Schema-API image with the image you just built.
 
-#### 7. Continue with the deployment
+#### 5. Continue with the deployment
 
 After that, continue with the standard Schema-API deployment process using the provided Kubernetes template.
 
