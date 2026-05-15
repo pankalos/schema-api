@@ -22,6 +22,13 @@ from api_streaming_timescale.handler import (
     handle_timescale_terminate,
 )
 
+from api_streaming_leaf_influx.handler import (
+    handle_leaf_influx_create,
+    handle_leaf_influx_list,
+    handle_leaf_influx_detail,
+    handle_leaf_influx_terminate,
+)
+
 
 STREAMING_HANDLERS = {
     "influx": {
@@ -36,15 +43,20 @@ STREAMING_HANDLERS = {
         "list": handle_timescale_list,
         "detail": handle_timescale_detail,
         "terminate": handle_timescale_terminate,
-    }
+    },
+
+    "leaf-influx": {
+        "create": handle_leaf_influx_create,
+        "list": handle_leaf_influx_list,
+        "detail": handle_leaf_influx_detail,
+        "terminate": handle_leaf_influx_terminate,
+    },
 }
 
 
 class StreamingDispatcherView(APIView):
-    # auth/permissions same...
     authentication_classes = [ApiTokenAuthentication] if settings.USE_AUTH else []
     permission_classes = [IsAuthenticated, IsUser, IsActive, IsContextMember] if settings.USE_AUTH else []
-
 
     @extend_schema(
         summary="Create a new streaming task",
@@ -64,11 +76,10 @@ class StreamingDispatcherView(APIView):
 
         return handler(payload, request.user)
 
-
     @extend_schema(
         summary="List all streaming tasks for current user",
         parameters=[
-            OpenApiParameter(name="streaming", required=False, type=str, description="Backend to use (e.g., influx, timescale)"),
+            OpenApiParameter(name="streaming", required=False, type=str, description="Backend to use (e.g., influx, timescale, leaf-influx)"),
         ],
         tags=["Streaming"],
         responses={200: GenericStreamingRequestSerializer}
@@ -82,7 +93,6 @@ class StreamingDispatcherView(APIView):
 
 
 class StreamingDispatcherDetailView(APIView):
-    # auth/permissions same...
     authentication_classes = [ApiTokenAuthentication] if settings.USE_AUTH else []
     permission_classes = [IsAuthenticated, IsUser, IsActive, IsContextMember] if settings.USE_AUTH else []
 
@@ -92,7 +102,6 @@ class StreamingDispatcherDetailView(APIView):
             OpenApiParameter(name="streaming", required=False, type=str, description="Backend to use"),
         ],
         tags=["Streaming"],
-        # responses={200: InfluxDBSerializer}  # You can make this dynamic if needed
     )
     def get(self, request, task_id):
         backend = request.query_params.get("streaming")
@@ -103,7 +112,6 @@ class StreamingDispatcherDetailView(APIView):
 
 
 class StreamingDispatcherTerminateView(APIView):
-    # auth/permissions same...
     authentication_classes = [ApiTokenAuthentication] if settings.USE_AUTH else []
     permission_classes = [IsAuthenticated, IsUser, IsActive, IsContextMember] if settings.USE_AUTH else []
 
@@ -121,4 +129,3 @@ class StreamingDispatcherTerminateView(APIView):
         if not handler:
             return Response({"error": "Unsupported backend"}, status=400)
         return handler(task_id, request.user)
-

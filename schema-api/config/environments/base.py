@@ -34,7 +34,8 @@ INSTALLED_APPS = [
     'drf_spectacular',
     'api_streaming',
     'api_streaming_influx',
-    'api_streaming_timescale'
+    'api_streaming_timescale',
+    'api_streaming_leaf_influx'
 ]
 
 MIDDLEWARE = [
@@ -149,7 +150,8 @@ MIGRATION_MODULES = {
     'workflows': 'migrations.workflows',
     'api_streaming': 'migrations.api_streaming',
     'api_streaming_influx': 'migrations.api_streaming_influx',
-    'api_streaming_timescale': 'migrations.api_streaming_timescale'
+    'api_streaming_timescale': 'migrations.api_streaming_timescale',
+    'api_streaming_leaf_influx': 'migrations.api_streaming_leaf_influx'
 }
 
 POSTGRES_DATABASE_CONFIGURATION = {

@@ -1,6 +1,6 @@
 # Kubernetes Deployment Guide for Schema-API and Schema-Lab
 
-This guide explains how to deploy [**Schema-API**](https://schema.athenarc.gr/docs/schema-api/) and **Schema-Lab** on **Kubernetes**..
+This guide explains how to deploy [**Schema-API**](https://schema.athenarc.gr/docs/schema-api/) and **Schema-Lab** on **Kubernetes**.
 
 ## Overview
 

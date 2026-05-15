@@ -13,9 +13,11 @@ schema-api/.env
 # Managers configuration file
 schema-api/managers.yml
 
+schema-api.zip
 
 # Local deployment Configuration
 deployment/Installation/
+deployment/k8s/deploy/
 
 # Virtual environment directory
 venv/
@@ -25,3 +27,6 @@ Dockerfile
 
 # Ignore SQLite3 files
 *.sqlite3
+
+# Ignore Venv
+.venv

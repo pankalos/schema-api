@@ -32,4 +32,7 @@ WORKDIR /schema-api
 
 COPY schema-api/ .
 
+# ENV PYTHONUNBUFFERED=1
+
 CMD ["uvicorn", "schema_api.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
+
