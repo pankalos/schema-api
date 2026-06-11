@@ -124,7 +124,7 @@ metadata:
   labels:
     app: schema-api
 data:
-  secretKey: sdfre9YGUU...df98UT=                          # A randomly chosen schema api secret key in base64 format.
+  secretKey: s......UT=                          # A randomly chosen schema api secret key in base64 format.
 ---
 apiVersion: v1
 kind: Secret

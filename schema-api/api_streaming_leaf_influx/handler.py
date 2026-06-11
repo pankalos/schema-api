@@ -67,6 +67,279 @@ def get_k8s_api():
     return _k8s_api
 
 
+
+
+
+
+def _delete_leaf_influx_k8s_resources(journey: LeafInfluxDB) -> None:
+    """
+    Delete Kubernetes resources created for this streaming job.
+
+    Important:
+    This function only deletes pods/services.
+    It does NOT decide the final DB status.
+
+    So it can be reused by:
+    - manual terminate      -> status = Terminated
+    - automatic error sync  -> status = Error
+    """
+    try:
+        get_k8s_api().delete_namespaced_pod(
+            name=journey.pod_modeler_name,
+            namespace=journey.namespace,
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
+
+    try:
+        get_k8s_api().delete_namespaced_pod(
+            name=journey.pod_listener_name,
+            namespace=journey.namespace,
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
+
+    try:
+        get_k8s_api().delete_namespaced_service(
+            name=journey.svc_modeler_name,
+            namespace=journey.namespace,
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
+
+
+
+
+
+
+def _read_pod(namespace: str, pod_name: str):
+    """
+    Return the Kubernetes pod object, or None if it does not exist.
+    """
+    try:
+        return get_k8s_api().read_namespaced_pod(
+            name=pod_name,
+            namespace=namespace,
+        )
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            return None
+        raise
+
+
+def _tail_pod_logs(namespace: str, pod_name: str, lines: int = 40) -> str:
+    """
+    Return last log lines for a pod.
+    Used only when we detect an error.
+    """
+    try:
+        logs = get_k8s_api().read_namespaced_pod_log(
+            name=pod_name,
+            namespace=namespace,
+            tail_lines=lines,
+        )
+        return logs or ""
+    except Exception as e:
+        return f"Could not read pod logs: {e}"
+
+
+def _container_error_message(pod, label: str) -> str:
+    """
+    Inspect one pod and return an error message if the pod/container is in
+    a failed or suspicious state.
+
+    Returns empty string if no pod-level error is detected.
+    """
+    if pod is None:
+        return f"{label} pod does not exist."
+
+    pod_name = pod.metadata.name
+    namespace = pod.metadata.namespace
+    phase = pod.status.phase
+
+    if phase == "Failed":
+        logs = _tail_pod_logs(namespace, pod_name)
+        return (
+            f"{label} pod failed. "
+            f"reason={pod.status.reason}, message={pod.status.message}\n"
+            f"Last logs:\n{logs}"
+        )
+
+    container_statuses = pod.status.container_statuses or []
+
+    for cs in container_statuses:
+        state = cs.state
+
+        if state.waiting:
+            reason = state.waiting.reason or ""
+            message = state.waiting.message or ""
+
+            # These are common Kubernetes container-level error states.
+            if reason in [
+                "CrashLoopBackOff",
+                "ImagePullBackOff",
+                "ErrImagePull",
+                "CreateContainerConfigError",
+                "CreateContainerError",
+                "InvalidImageName",
+                "RunContainerError",
+            ]:
+                
+                logs = _tail_pod_logs(namespace, pod_name)
+
+                previous = ""
+                if cs.last_state and cs.last_state.terminated:
+                    previous_term = cs.last_state.terminated
+                    previous = (
+                        f" Previous termination: "
+                        f"exit_code={previous_term.exit_code}, "
+                        f"reason={previous_term.reason}, "
+                        f"message={previous_term.message}."
+                    )
+
+                return (
+                    f"{label} container is waiting with error. "
+                    f"container={cs.name}, reason={reason}, message={message}."
+                    f"{previous}\n"
+                    f"Last logs:\n{logs}"
+                )
+
+        if state.terminated:
+            reason = state.terminated.reason or ""
+            message = state.terminated.message or ""
+            exit_code = state.terminated.exit_code
+
+            if exit_code != 0:
+                logs = _tail_pod_logs(namespace, pod_name)
+                return (
+                    f"{label} container terminated with non-zero exit code. "
+                    f"container={cs.name}, exit_code={exit_code}, "
+                    f"reason={reason}, message={message}\n"
+                    f"Last logs:\n{logs}"
+                )
+
+    return ""
+
+
+def _pod_is_running_and_ready(pod) -> bool:
+    """
+    True only when pod phase is Running and all containers are ready.
+    """
+    if pod is None:
+        return False
+
+    if pod.status.phase != "Running":
+        return False
+
+    container_statuses = pod.status.container_statuses or []
+
+    if not container_statuses:
+        return False
+
+    return all(cs.ready for cs in container_statuses)
+
+
+
+
+def sync_leaf_influx_status(journey: LeafInfluxDB) -> LeafInfluxDB:
+    """
+    Refresh DB status based on current Kubernetes pod state.
+
+    Called from list/detail.
+
+    If an error is detected:
+    - status becomes Error
+    - error_message is saved
+    - total_runtime is frozen
+    - Kubernetes pods/services are cleaned up
+    - DB row remains as Error
+
+    If user manually terminates:
+    - status is Completed
+    - sync does not touch it again
+    """
+    if journey.status in ["Completed", "Error"]:
+        return journey
+
+    listener_pod = _read_pod(journey.namespace, journey.pod_listener_name)
+    modeler_pod = _read_pod(journey.namespace, journey.pod_modeler_name)
+
+    listener_error = _container_error_message(listener_pod, "listener")
+    modeler_error = _container_error_message(modeler_pod, "modeler")
+
+    if listener_error or modeler_error:
+        error_message = "\n\n".join(
+            msg for msg in [listener_error, modeler_error] if msg
+        )
+
+        journey.status = "Error"
+        journey.status_updated_at = timezone.now()
+        journey.error_message = error_message
+
+        if journey.total_runtime is None:
+            journey.total_runtime = timezone.now() - journey.created_at
+
+        journey.save(
+            update_fields=[
+                "status",
+                "status_updated_at",
+                "error_message",
+                "total_runtime",
+            ]
+        )
+
+        # Auto-cleanup after error detection.
+        # Keep DB status as Error.
+        try:
+            _delete_leaf_influx_k8s_resources(journey)
+        except Exception as cleanup_error:
+            journey.error_message = (
+                f"{journey.error_message}\n\n"
+                f"Cleanup error after detecting task failure: {cleanup_error}"
+            )
+            journey.status_updated_at = timezone.now()
+            journey.save(update_fields=["error_message", "status_updated_at"])
+
+        return journey
+
+    if _pod_is_running_and_ready(listener_pod) and _pod_is_running_and_ready(modeler_pod):
+        if journey.status != "Running" or journey.error_message:
+            journey.status = "Running"
+            journey.status_updated_at = timezone.now()
+            journey.error_message = None
+            journey.save(
+                update_fields=[
+                    "status",
+                    "status_updated_at",
+                    "error_message",
+                ]
+            )
+
+        return journey
+
+    # Not failed, but not fully running yet.
+    if journey.status != "Queued" or journey.error_message:
+        journey.status = "Queued"
+        journey.status_updated_at = timezone.now()
+        journey.error_message = None
+        journey.save(
+            update_fields=[
+                "status",
+                "status_updated_at",
+                "error_message",
+            ]
+        )
+
+    return journey
+
+
+
+
+
+
 # ----------------------------
 # CREATE
 # ----------------------------
@@ -83,6 +356,7 @@ def _create_leaf_influx_task(validated_data, user):
 
     source = validated_data["source"]
     modeler = validated_data["modeler"]
+    mqtt_conf = validated_data["mqtt"]
 
     LISTENER_IMAGE = get_listener_image()
     LISTENER_SCRIPT = get_listener_script()
@@ -121,28 +395,49 @@ def _create_leaf_influx_task(validated_data, user):
     )
     get_k8s_api().create_namespaced_service(namespace=namespace, body=service)
 
+
     # Listener flags only.
-    # We inject LEAF_API_URL and LEAF_API_TOKEN through env vars.
+    # We inject sensitive values through env vars where possible.
     listener_args = [
         "--target_service", svc_modeler_name,
         "--target_endpoint", modeler["endpoint"],
         "--port", str(modeler["port"]),
+
         "--organisation", source["organisation"],
         "--department", source["department"],
+        "--entity", source["entity"],
+
         "--metrics", *source["metrics"],
         "--everyTs", str(source["everyTs"]),
     ]
-
-    if source.get("entity"):
-        listener_args += ["--entity", source["entity"]]
-
-    if modeler.get("include_time_to_mod", False):
-        listener_args.append("--include_time_to_mod")
 
     listener_env = [
         client.V1EnvVar(name="LEAF_API_URL", value=source["api_url"]),
         client.V1EnvVar(name="LEAF_API_TOKEN", value=source["token"]),
     ]
+
+    
+    # MQTT write-back is required now.
+    # Values come from the POST payload.
+    # Username/password are injected into the dynamically-created listener pod.
+    listener_args += [
+        "--mqtt_host", mqtt_conf["host"],
+        "--mqtt_port", str(mqtt_conf.get("port", 443)),
+        "--mqtt_topic", mqtt_conf["topic"],
+        "--mqtt_basepath", mqtt_conf.get("basepath", "mqtt"),
+        "--mqtt_measurement", mqtt_conf["measurement"],
+    ]
+
+    output_tags = mqtt_conf.get("output_tags") or []
+    if output_tags:
+        listener_args += ["--output_tags", *output_tags]
+
+    listener_env += [
+        client.V1EnvVar(name="MQTT_USERNAME", value=mqtt_conf["username"]),
+        client.V1EnvVar(name="MQTT_PASSWORD", value=mqtt_conf["password"]),
+    ]
+
+
 
     # --- Create listener pod ---
     pod_listener = client.V1Pod(
@@ -169,7 +464,12 @@ def _create_leaf_influx_task(validated_data, user):
     source_safe = dict(source)
     source_safe.pop("token", None)
 
-    journey = LeafInfluxDB.objects.create(
+    
+    mqtt_safe = dict(mqtt_conf)
+    mqtt_safe.pop("password", None)
+
+
+    leaf_task = LeafInfluxDB.objects.create(
         id=rand_s,
         user=user,
         namespace=namespace,
@@ -178,10 +478,14 @@ def _create_leaf_influx_task(validated_data, user):
         pod_listener_name=pod_listener_name,
         source=source_safe,
         modeler=modeler,
-        status="created",
+        mqtt=mqtt_safe,
+        status="Queued",
+        status_updated_at=timezone.now(),
+        error_message=None,
     )
 
-    return Response({"task_id": journey.id, "status": "created"}, status=status.HTTP_201_CREATED)
+    serializer = LeafInfluxSummarySerializer(leaf_task)
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 # ----------------------------
@@ -189,18 +493,25 @@ def _create_leaf_influx_task(validated_data, user):
 # ----------------------------
 
 def handle_leaf_influx_list(user):
-    journeys = LeafInfluxDB.objects.filter(user=user)
+    journeys = list(LeafInfluxDB.objects.filter(user=user))
+
+    for journey in journeys:
+        sync_leaf_influx_status(journey)
+
     serializer = LeafInfluxSummarySerializer(journeys, many=True)
     return Response(serializer.data, status=200)
+
 
 
 def handle_leaf_influx_detail(task_id, user):
     try:
         journey = LeafInfluxDB.objects.get(id=task_id, user=user)
+        journey = sync_leaf_influx_status(journey)
         serializer = LeafInfluxSerializer(journey)
         return Response(serializer.data, status=200)
     except LeafInfluxDB.DoesNotExist:
         return Response({"error": "Not found"}, status=404)
+
 
 
 # ----------------------------
@@ -209,32 +520,28 @@ def handle_leaf_influx_detail(task_id, user):
 
 def handle_leaf_influx_terminate(task_id, user):
     try:
-        journey = LeafInfluxDB.objects.get(id=task_id, user=user)
+        task = LeafInfluxDB.objects.get(id=task_id, user=user)
 
-        try:
-            get_k8s_api().delete_namespaced_pod(name=journey.pod_modeler_name, namespace=journey.namespace)
-        except client.exceptions.ApiException as e:
-            if e.status != 404:
-                raise
+        _delete_leaf_influx_k8s_resources(task)
 
-        try:
-            get_k8s_api().delete_namespaced_pod(name=journey.pod_listener_name, namespace=journey.namespace)
-        except client.exceptions.ApiException as e:
-            if e.status != 404:
-                raise
+        if task.total_runtime is None:
+            task.total_runtime = timezone.now() - task.created_at
 
-        try:
-            get_k8s_api().delete_namespaced_service(name=journey.svc_modeler_name, namespace=journey.namespace)
-        except client.exceptions.ApiException as e:
-            if e.status != 404:
-                raise
+        task.status = "Completed"
+        task.status_updated_at = timezone.now()
+        task.error_message = None
 
-        if journey.total_runtime is None:
-            journey.total_runtime = timezone.now() - journey.created_at
-        journey.status = "Terminated"
-        journey.save()
+        task.save(
+            update_fields=[
+                "status",
+                "status_updated_at",
+                "error_message",
+                "total_runtime",
+            ]
+        )
 
-        return Response({"status": "Terminated"}, status=200)
+        serializer = LeafInfluxSummarySerializer(task)
+        return Response(serializer.data, status=200)
 
     except LeafInfluxDB.DoesNotExist:
         return Response({"error": "Not found"}, status=404)

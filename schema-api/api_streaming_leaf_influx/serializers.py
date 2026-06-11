@@ -8,7 +8,7 @@ class LeafInfluxSourceSerializer(serializers.Serializer):
 
     organisation = serializers.CharField()
     department = serializers.CharField()
-    entity = serializers.CharField(required=False, allow_blank=False)
+    entity = serializers.CharField(allow_blank=False)
 
     metrics = serializers.ListField(
         child=serializers.CharField(),
@@ -22,8 +22,29 @@ class LeafInfluxModelerSerializer(serializers.Serializer):
     endpoint = serializers.CharField()
     image = serializers.CharField()
     port = serializers.IntegerField()
-    args = serializers.ListField(child=serializers.CharField(), required=False, default=list)
-    include_time_to_mod = serializers.BooleanField(required=False, default=False)
+    args = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        default=list,
+    )
+
+
+class LeafInfluxMqttSerializer(serializers.Serializer):
+    host = serializers.CharField()
+    port = serializers.IntegerField(required=False, default=443)
+    username = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+    topic = serializers.CharField()
+    basepath = serializers.CharField(required=False, default="mqtt")
+
+    # Required. No default.
+    measurement = serializers.CharField(allow_blank=False)
+
+    output_tags = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        default=list,
+    )
 
 
 class LeafInfluxCreateSerializer(serializers.Serializer):
@@ -31,13 +52,17 @@ class LeafInfluxCreateSerializer(serializers.Serializer):
     source = LeafInfluxSourceSerializer()
     modeler = LeafInfluxModelerSerializer()
 
+    # Required now.
+    mqtt = LeafInfluxMqttSerializer()
 
-class LeafInfluxSerializer(serializers.ModelSerializer):
+
+class LeafInfluxResponseMixin:
+    submitted_at = serializers.DateTimeField(source="created_at", read_only=True)
     total_runtime = serializers.SerializerMethodField()
+    current_status = serializers.SerializerMethodField()
 
-    class Meta:
-        model = LeafInfluxDB
-        fields = '__all__'
+    def _format_datetime(self, value):
+        return serializers.DateTimeField().to_representation(value)
 
     def get_total_runtime(self, obj):
         delta = obj.computed_runtime
@@ -46,17 +71,44 @@ class LeafInfluxSerializer(serializers.ModelSerializer):
         mins, secs = divmod(rem, 60)
         return f"{hours}:{mins:02}:{secs:02}"
 
+    def get_current_status(self, obj):
+        data = {
+            "status": obj.status,
+            "updated_at": self._format_datetime(obj.status_updated_at),
+        }
 
-class LeafInfluxSummarySerializer(serializers.ModelSerializer):
-    total_runtime = serializers.SerializerMethodField()
+        if obj.status == "Error" and obj.error_message:
+            data["error_message"] = obj.error_message
 
+        return data
+
+
+class LeafInfluxSummarySerializer(LeafInfluxResponseMixin, serializers.ModelSerializer):
     class Meta:
         model = LeafInfluxDB
-        fields = ['id', 'created_at', 'status', 'total_runtime']
+        fields = [
+            "id",
+            "submitted_at",
+            "current_status",
+            "total_runtime",
+        ]
 
-    def get_total_runtime(self, obj):
-        delta = obj.computed_runtime
-        seconds = round(delta.total_seconds())
-        hours, rem = divmod(seconds, 3600)
-        mins, secs = divmod(rem, 60)
-        return f"{hours}:{mins:02}:{secs:02}"
+
+class LeafInfluxSerializer(LeafInfluxResponseMixin, serializers.ModelSerializer):
+    class Meta:
+        model = LeafInfluxDB
+        fields = [
+            "id",
+            "submitted_at",
+            "current_status",
+            "total_runtime",
+
+            # Extra detail fields
+            "namespace",
+            "pod_modeler_name",
+            "svc_modeler_name",
+            "pod_listener_name",
+            "source",
+            "modeler",
+            "mqtt",
+        ]
