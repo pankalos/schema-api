@@ -56,11 +56,8 @@ class LeafInfluxCreateSerializer(serializers.Serializer):
     mqtt = LeafInfluxMqttSerializer()
 
 
-class LeafInfluxResponseMixin:
-    submitted_at = serializers.DateTimeField(source="created_at", read_only=True)
-    total_runtime = serializers.SerializerMethodField()
-    current_status = serializers.SerializerMethodField()
 
+class LeafInfluxSerializerHelpers:
     def _format_datetime(self, value):
         return serializers.DateTimeField().to_representation(value)
 
@@ -83,7 +80,11 @@ class LeafInfluxResponseMixin:
         return data
 
 
-class LeafInfluxSummarySerializer(LeafInfluxResponseMixin, serializers.ModelSerializer):
+class LeafInfluxSummarySerializer(LeafInfluxSerializerHelpers, serializers.ModelSerializer):
+    submitted_at = serializers.DateTimeField(source="created_at", read_only=True)
+    total_runtime = serializers.SerializerMethodField()
+    current_status = serializers.SerializerMethodField()
+
     class Meta:
         model = LeafInfluxDB
         fields = [
@@ -94,7 +95,11 @@ class LeafInfluxSummarySerializer(LeafInfluxResponseMixin, serializers.ModelSeri
         ]
 
 
-class LeafInfluxSerializer(LeafInfluxResponseMixin, serializers.ModelSerializer):
+class LeafInfluxSerializer(LeafInfluxSerializerHelpers, serializers.ModelSerializer):
+    submitted_at = serializers.DateTimeField(source="created_at", read_only=True)
+    total_runtime = serializers.SerializerMethodField()
+    current_status = serializers.SerializerMethodField()
+
     class Meta:
         model = LeafInfluxDB
         fields = [
@@ -103,7 +108,6 @@ class LeafInfluxSerializer(LeafInfluxResponseMixin, serializers.ModelSerializer)
             "current_status",
             "total_runtime",
 
-            # Extra detail fields
             "namespace",
             "pod_modeler_name",
             "svc_modeler_name",
