@@ -79,9 +79,8 @@ def _delete_leaf_influx_k8s_resources(journey: LeafInfluxDB) -> None:
     This function only deletes pods/services.
     It does NOT decide the final DB status.
 
-    So it can be reused by:
-    - manual terminate      -> status = Terminated
-    - automatic error sync  -> status = Error
+    Currently used by:
+    - manual terminate -> status = Completed
     """
     try:
         get_k8s_api().delete_namespaced_pod(
@@ -254,8 +253,7 @@ def sync_leaf_influx_status(journey: LeafInfluxDB) -> LeafInfluxDB:
     - status becomes Error
     - error_message is saved
     - total_runtime is frozen
-    - Kubernetes pods/services are cleaned up
-    - DB row remains as Error
+    - Kubernetes resources are NOT deleted automatically
 
     If user manually terminates:
     - status is Completed
@@ -290,18 +288,6 @@ def sync_leaf_influx_status(journey: LeafInfluxDB) -> LeafInfluxDB:
                 "total_runtime",
             ]
         )
-
-        # Auto-cleanup after error detection.
-        # Keep DB status as Error.
-        try:
-            _delete_leaf_influx_k8s_resources(journey)
-        except Exception as cleanup_error:
-            journey.error_message = (
-                f"{journey.error_message}\n\n"
-                f"Cleanup error after detecting task failure: {cleanup_error}"
-            )
-            journey.status_updated_at = timezone.now()
-            journey.save(update_fields=["error_message", "status_updated_at"])
 
         return journey
 
@@ -373,6 +359,7 @@ def _create_leaf_influx_task(validated_data, user):
             labels={"role": "modeler", "stream_id": rand_s},
         ),
         spec=client.V1PodSpec(
+            restart_policy="Never",
             containers=[
                 client.V1Container(
                     name=pod_modeler_name,
@@ -447,6 +434,7 @@ def _create_leaf_influx_task(validated_data, user):
             labels={"role": "listener", "stream_id": rand_s},
         ),
         spec=client.V1PodSpec(
+            restart_policy="Never",
             containers=[
                 client.V1Container(
                     name=pod_listener_name,
@@ -522,23 +510,34 @@ def handle_leaf_influx_terminate(task_id, user):
     try:
         task = LeafInfluxDB.objects.get(id=task_id, user=user)
 
+        # Before deleting pods/services, refresh status from Kubernetes.
+        # This allows terminate to notice a listener/modeler failure
+        # even if /list or /detail was not called before terminate.
+        task = sync_leaf_influx_status(task)
+
+        # Delete listener pod, modeler pod, and service.
         _delete_leaf_influx_k8s_resources(task)
 
         if task.total_runtime is None:
             task.total_runtime = timezone.now() - task.created_at
 
-        task.status = "Completed"
-        task.status_updated_at = timezone.now()
-        task.error_message = None
-
-        task.save(
-            update_fields=[
-                "status",
-                "status_updated_at",
-                "error_message",
-                "total_runtime",
-            ]
-        )
+        # Important:
+        # If task is already Error, keep Error + error_message.
+        # Manual cleanup should not turn a failed task into Completed.
+        if task.status == "Error":
+            task.save(update_fields=["total_runtime"])
+        else:
+            task.status = "Completed"
+            task.status_updated_at = timezone.now()
+            task.error_message = None
+            task.save(
+                update_fields=[
+                    "status",
+                    "status_updated_at",
+                    "error_message",
+                    "total_runtime",
+                ]
+            )
 
         serializer = LeafInfluxSummarySerializer(task)
         return Response(serializer.data, status=200)
