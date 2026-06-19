@@ -2,20 +2,36 @@ from rest_framework import serializers
 from .models import LeafInfluxDB
 
 
+class LeafInfluxEntityMetricSetSerializer(serializers.Serializer):
+    entity = serializers.CharField(allow_blank=False)
+    metrics = serializers.ListField(
+        child=serializers.CharField(allow_blank=False),
+        min_length=1,
+    )
+
+
 class LeafInfluxSourceSerializer(serializers.Serializer):
     api_url = serializers.URLField()
     token = serializers.CharField()
 
     organisation = serializers.CharField()
     department = serializers.CharField()
-    entity = serializers.CharField(allow_blank=False)
 
-    metrics = serializers.ListField(
-        child=serializers.CharField(),
+    # New protocol:
+    # Explicit entity/metric groups. No top-level entity or metrics fields.
+    entity_metrics_set = serializers.ListField(
+        child=LeafInfluxEntityMetricSetSerializer(),
         min_length=1,
     )
 
     everyTs = serializers.IntegerField(min_value=1)
+
+    # One LEAF request can return many rows, so keep limit configurable.
+    limit = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        default=1000,
+    )
 
 
 class LeafInfluxModelerSerializer(serializers.Serializer):

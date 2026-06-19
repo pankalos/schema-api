@@ -1,4 +1,5 @@
 import os
+import json
 
 from typing import Optional
 
@@ -108,8 +109,6 @@ def _delete_leaf_influx_k8s_resources(journey: LeafInfluxDB) -> None:
     except client.exceptions.ApiException as e:
         if e.status != 404:
             raise
-
-
 
 
 
@@ -324,8 +323,6 @@ def sync_leaf_influx_status(journey: LeafInfluxDB) -> LeafInfluxDB:
 
 
 
-
-
 # ----------------------------
 # CREATE
 # ----------------------------
@@ -385,6 +382,10 @@ def _create_leaf_influx_task(validated_data, user):
 
     # Listener flags only.
     # We inject sensitive values through env vars where possible.
+    # entity_metrics_set is passed as JSON so the listener can make one LEAF API call
+    # and then group rows by the explicit requested entity/metric pairs.
+    entity_metrics_set_json = json.dumps(source["entity_metrics_set"])
+
     listener_args = [
         "--target_service", svc_modeler_name,
         "--target_endpoint", modeler["endpoint"],
@@ -392,10 +393,10 @@ def _create_leaf_influx_task(validated_data, user):
 
         "--organisation", source["organisation"],
         "--department", source["department"],
-        "--entity", source["entity"],
+        "--entity_metrics_set_json", entity_metrics_set_json,
 
-        "--metrics", *source["metrics"],
         "--everyTs", str(source["everyTs"]),
+        "--limit", str(source.get("limit", 1000)),
     ]
 
     listener_env = [
@@ -546,4 +547,3 @@ def handle_leaf_influx_terminate(task_id, user):
         return Response({"error": "Not found"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
-
