@@ -396,6 +396,7 @@ def _create_leaf_influx_task(validated_data, user):
         "--entity_metrics_set_json", entity_metrics_set_json,
 
         "--everyTs", str(source["everyTs"]),
+        "--queryDelayS", str(source.get("queryDelayS", 0)),
         "--limit", str(source.get("limit", 1000)),
     ]
 

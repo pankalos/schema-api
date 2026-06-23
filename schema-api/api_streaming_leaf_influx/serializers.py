@@ -26,6 +26,12 @@ class LeafInfluxSourceSerializer(serializers.Serializer):
 
     everyTs = serializers.IntegerField(min_value=1)
 
+    queryDelayS = serializers.IntegerField(
+        required=False,
+        min_value=0,
+        default=0,
+    )
+
     # One LEAF request can return many rows, so keep limit configurable.
     limit = serializers.IntegerField(
         required=False,
